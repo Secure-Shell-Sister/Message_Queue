@@ -18,31 +18,38 @@ exchange_channel = conn.create_channel
 exchange = exchange_channel.direct('log_exchanger', :auto_delete => true)
 
 result_channel = conn.create_channel
+result_channel.prefetch 1
 result_queue = result_channel.queue('', :exclusive => true)
 result_queue.bind(exchange, :routing_key => 'result')
 #Handles result from the workey asyncrhonously
-result_consumer = result_queue.subscribe(:block => false) do |deivery_info, properties, payload|
+result_consumer = result_queue.subscribe(:block => false, :manual_ack => true) do |delivery_info, properties, payload|
 	result = JSON.parse payload
-	result.each do |key, value|
-		if category_hash.include? key
-			category_hash[key] += value
-		else
-			category_hash[key] = value
-		end
-	end
+	filename = properties.headers['filename']
+	print "Got reply #{filename}\n"
+	category_hash.merge!(result){|_key, old, new| new + old}
+
+	result_channel.acknowledge(delivery_info.delivery_tag)
+	print "Waiting next reply\n"
 	result_counter += 1
 end
 
+start = Time.now
+puts "Sending files"
+
 Dir.glob "#{log_path}/secure*" do |file|
+	last_dash = file.rindex(/\//) + 1
+	filename = file[last_dash..-1]
 	file_counter += 1
 	log_content = File.read file
-	exchange.publish(log_content, :routing_key => 'log', :headers => {:filename => file})
+	exchange.publish(log_content, :routing_key => 'log', :headers => {:filename => filename})
 end
 
+puts "Waiting for completion"
 while file_counter != result_counter do
 end
 
-puts category_hash
+puts "Completed at after #{Time.now - start}"
+puts category_hash.sort_by{|_key, value| -value}
 
 result_channel.close
 exchange_channel.close

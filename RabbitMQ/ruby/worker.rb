@@ -13,6 +13,7 @@ conn.start
 
 channels = []
 worker_channel = conn.create_channel nil, total_worker #Set the size for thread pool for consumer
+worker_channel.prefetch 1	#One job at a time for every consumer
 channels << worker_channel
 
 publish_channel = conn.create_channel
@@ -26,10 +27,11 @@ queue.bind(exchange, :routing_key => 'log')
 
 begin
 	puts "Program is running"
-	consumer = queue.subscribe(:block => true) do |deivery_info, properties, payload|
-		puts "Got new log #{properties.headers['filename']}"
+	consumer = queue.subscribe(:block => true, :manual_ack => true) do |delivery_info, properties, payload|
+		filename = properties.headers['filename']
+		print "Got new log #{filename}\n"
 		result = Hash.new
-		result['Unindentified'] = 0
+		result['Unidentified'] = 0
 		payload.lines.each do |line|
 			match = mathcer.match line
 			key_string = nil
@@ -54,9 +56,13 @@ begin
 		end
 
 		#Sent back the result
-		exchange.publish(result.to_json, :routing_key => 'result')
+		exchange.publish(result.to_json, :routing_key => 'result', :headers => {:filename => filename})
+
+		worker_channel.acknowledge(delivery_info.delivery_tag)
+		print "Done parsing #{filename}\n#{result.to_json}\n"
 	end
 rescue Interrupt => _
+	puts "Closing program"
 	#Close all connection when receiving interrupt
 	channels.each do |ch|
 		ch.close
